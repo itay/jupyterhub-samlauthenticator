@@ -94,6 +94,21 @@ class SAMLAuthenticator(Authenticator):
         }
         '''
     )
+    xpath_groups_location = Unicode(
+        default_value='//saml:Attribute[@Name="http://schemas.xmlsoap.org/claims/Group"]/saml:AttributeValue/text()',
+        allow_none=True,
+        config=True,
+        help='''
+        This is an XPath that specifies where the groups information is located.
+        The namespace bindings when executing the XPath will be as follows:
+        {
+            'ds'   : 'http://www.w3.org/2000/09/xmldsig#',
+            'md'   : 'urn:oasis:names:tc:SAML:2.0:metadata',
+            'saml' : 'urn:oasis:names:tc:SAML:2.0:assertion',
+            'samlp': 'urn:oasis:names:tc:SAML:2.0:protocol'
+        }
+        '''
+    )
     login_post_field = Unicode(
         default_value='SAMLResponse',
         allow_none=False,
@@ -555,6 +570,25 @@ class SAMLAuthenticator(Authenticator):
 
         return self._get_username_from_saml_etree(decoded_saml_doc)
 
+    def _get_groups_from_saml_etree(self, signed_xml):
+        xpath_with_namespaces = self._make_xpath_builder()
+
+        xpath_fun = xpath_with_namespaces(self.xpath_groups_location)
+        xpath_result = xpath_fun(signed_xml)
+        if xpath_result:
+            return xpath_result
+
+        self.log.warning('Could not find groups from group XPath: \'%s\'' % self.xpath_groups_location)
+
+        return None
+
+    def _get_groups_from_saml_doc(self, signed_xml, decoded_saml_doc):
+        groups = self._get_groups_from_saml_etree(signed_xml)
+        if groups:
+            return groups
+
+        self.log.info('Did not get groups from signed SAML Response')
+
     def _optional_user_add(self, username):
         try:
             pwd.getpwnam(username)
@@ -597,8 +631,12 @@ class SAMLAuthenticator(Authenticator):
             username = self.normalize_username(username)
             self.log.debug('Optionally create and return user: ' + username)
             username_add_result = self._check_username_and_add_user(username)
+            groups = self._get_groups_from_saml_doc(signed_xml, saml_doc_etree)
             if username_add_result:
-                return username
+                user_info = {"name": username}
+                if groups:
+                    user_info["auth_state"] = {"groups": groups}
+                return user_info
 
             self.log.error('Failed to add user')
             return None
